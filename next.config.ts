@@ -6,6 +6,14 @@ const nextConfig: NextConfig = {
   // makes Next.js load it with a plain Node `require` instead, where the
   // worker resolves normally.
   serverExternalPackages: ["pdf-parse", "pdfjs-dist"],
+  // pdfjs-dist dynamically imports its own worker file
+  // (pdf.worker.mjs) at runtime — Vercel's static file tracer can't see
+  // that, so the worker never gets included in the deployed function
+  // unless we say so explicitly here.
+  outputFileTracingIncludes: {
+    "/api/resume/analyze": ["./node_modules/pdfjs-dist/legacy/build/*"],
+    "/api/faculty/assessments/upload": ["./node_modules/pdfjs-dist/legacy/build/*"],
+  },
 };
 
 export default nextConfig;
