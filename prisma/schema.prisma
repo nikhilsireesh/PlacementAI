@@ -1,0 +1,399 @@
+// Prisma schema for the AI-Powered Placement Readiness System.
+// Database: Neon PostgreSQL. See README.md for setup instructions.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  STUDENT
+  FACULTY
+  ADMIN
+}
+
+enum SkillCategory {
+  CODING
+  APTITUDE
+  TECHNICAL
+  COMMUNICATION
+  INTERVIEW
+  RESUME
+  ROLE_SPECIFIC
+}
+
+enum QuestionType {
+  MCQ
+  CODE_OUTPUT
+  DESCRIPTIVE
+}
+
+enum Priority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum RecommendationSource {
+  AI
+  FALLBACK
+}
+
+enum RecommendationStatus {
+  GENERATED
+  OPENED
+  STARTED
+  COMPLETED
+  DISMISSED
+}
+
+enum ResourceType {
+  ARTICLE
+  VIDEO
+  PRACTICE_SET
+  DOCUMENTATION
+  COURSE
+}
+
+enum InterviewType {
+  HR
+  TECHNICAL
+  BEHAVIORAL
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Identity
+// ─────────────────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         UserRole
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  student  Student?
+  faculty  Faculty?
+
+  @@index([email])
+}
+
+model Department {
+  id       String    @id @default(cuid())
+  name     String    @unique
+  code     String    @unique
+  students Student[]
+  faculty  Faculty[]
+}
+
+model Faculty {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+  title        String   @default("Placement Officer")
+  createdAt    DateTime @default(now())
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Students & role targets
+// ─────────────────────────────────────────────────────────────────────────
+
+model JobRole {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  skills          JobRoleSkill[]
+  students        Student[]
+  interviewSessions InterviewSession[]
+
+  @@index([active])
+}
+
+model Skill {
+  id       String        @id @default(cuid())
+  name     String        @unique
+  category SkillCategory
+
+  jobRoles       JobRoleSkill[]
+  studentSkills  StudentSkill[]
+  questions      Question[]
+  resources      LearningResource[]
+  assessments    Assessment[]
+  practiceSessions PracticeSession[]
+  progressRecords ProgressRecord[]
+}
+
+model JobRoleSkill {
+  id             String  @id @default(cuid())
+  jobRoleId      String
+  jobRole        JobRole @relation(fields: [jobRoleId], references: [id], onDelete: Cascade)
+  skillId        String
+  skill          Skill   @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  weight         Float   // 0..1, weights across a role's skills should sum to ~1
+  minimumTarget  Float   @default(75) // target score (0-100) considered "ready" for this skill
+
+  @@unique([jobRoleId, skillId])
+}
+
+model Student {
+  id                 String   @id @default(cuid())
+  userId             String   @unique
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  rollNumber         String   @unique
+  departmentId       String
+  department         Department @relation(fields: [departmentId], references: [id])
+  year               Int
+  semester           Int
+  cgpa               Float?
+  preferredRoleId    String?
+  preferredRole      JobRole? @relation(fields: [preferredRoleId], references: [id])
+  profileCompletion  Int      @default(20)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  skills              StudentSkill[]
+  attempts            AssessmentAttempt[]
+  resumes             Resume[]
+  recommendations     Recommendation[]
+  practiceSessions    PracticeSession[]
+  progressRecords     ProgressRecord[]
+  interviewSessions   InterviewSession[]
+  readinessSnapshots  ReadinessSnapshot[]
+  badges              StudentBadge[]
+
+  @@index([departmentId])
+  @@index([preferredRoleId])
+}
+
+model StudentSkill {
+  id             String   @id @default(cuid())
+  studentId      String
+  student        Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  skillId        String
+  skill          Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  currentScore   Float    @default(0)   // 0-100
+  previousScore  Float?                 // score before the most recent update
+  dataPoints     Int      @default(0)   // number of assessments/practice sessions contributing
+  lastAssessedAt DateTime?
+  updatedAt      DateTime @updatedAt
+
+  @@unique([studentId, skillId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Assessments & practice
+// ─────────────────────────────────────────────────────────────────────────
+
+model Assessment {
+  id              String   @id @default(cuid())
+  title           String
+  category        SkillCategory
+  skillId         String
+  skill           Skill    @relation(fields: [skillId], references: [id])
+  difficulty      String   @default("MEDIUM") // EASY | MEDIUM | HARD
+  timeLimitMinutes Int     @default(20)
+  totalMarks      Int      @default(0)
+  // true = a short, untimed practice set (Practice module); false = a formal,
+  // timed assessment (Assessments module). Both share the same question bank
+  // structure so grading/skill-update logic can be reused.
+  isPractice      Boolean  @default(false)
+  topic           String?
+  createdAt       DateTime @default(now())
+
+  questions Question[]
+  attempts  AssessmentAttempt[]
+}
+
+model Question {
+  id             String       @id @default(cuid())
+  assessmentId   String
+  assessment     Assessment   @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  skillId        String
+  skill          Skill        @relation(fields: [skillId], references: [id])
+  type           QuestionType @default(MCQ)
+  text           String
+  options        Json?        // array of strings for MCQ
+  correctAnswer  String
+  explanation    String?
+  marks          Int          @default(1)
+  difficulty     String       @default("MEDIUM")
+  topic          String?
+
+  answers AssessmentAnswer[]
+}
+
+model AssessmentAttempt {
+  id                 String     @id @default(cuid())
+  studentId          String
+  student            Student    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  assessmentId       String
+  assessment         Assessment @relation(fields: [assessmentId], references: [id])
+  startedAt          DateTime   @default(now())
+  submittedAt        DateTime?
+  rawScore           Float?
+  totalMarks         Int?
+  percentage         Float?
+  previousPercentage Float?
+  improvementPct     Float?
+
+  answers AssessmentAnswer[]
+
+  @@index([studentId])
+}
+
+model AssessmentAnswer {
+  id             String            @id @default(cuid())
+  attemptId      String
+  attempt        AssessmentAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  questionId     String
+  question       Question          @relation(fields: [questionId], references: [id])
+  answerText     String?
+  isCorrect      Boolean           @default(false)
+  marksAwarded   Float             @default(0)
+}
+
+model PracticeSession {
+  id                  String   @id @default(cuid())
+  studentId           String
+  student             Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  skillId             String
+  skill               Skill    @relation(fields: [skillId], references: [id])
+  category            SkillCategory
+  questionsAttempted  Int      @default(0)
+  questionsCorrect    Int      @default(0)
+  timeSpentSeconds    Int      @default(0)
+  score               Float    @default(0)
+  recommendationId    String?
+  recommendation      Recommendation? @relation(fields: [recommendationId], references: [id])
+  completedAt         DateTime @default(now())
+
+  @@index([studentId])
+}
+
+model ProgressRecord {
+  id         String   @id @default(cuid())
+  studentId  String
+  student    Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  skillId    String?
+  skill      Skill?   @relation(fields: [skillId], references: [id])
+  score      Float
+  source     String   // "assessment" | "practice" | "readiness"
+  recordedAt DateTime @default(now())
+
+  @@index([studentId, skillId])
+}
+
+model ReadinessSnapshot {
+  id         String   @id @default(cuid())
+  studentId  String
+  student    Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  score      Float
+  confidence Float
+  breakdown  Json     // { skillId: { score, weight, weighted } }
+  createdAt  DateTime @default(now())
+
+  @@index([studentId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// AI-assisted features
+// ─────────────────────────────────────────────────────────────────────────
+
+model Resume {
+  id           String   @id @default(cuid())
+  studentId    String
+  student      Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  fileName     String
+  rawText      String   @db.Text
+  analysisJson Json?
+  uploadedAt   DateTime @default(now())
+}
+
+model Recommendation {
+  id                String                @id @default(cuid())
+  studentId         String
+  student           Student               @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  primaryGap        String
+  secondaryGap      String?
+  reason            String
+  nextBestAction    String
+  practiceType      String
+  estimatedMinutes  Int
+  priority          Priority
+  learningTopics    Json                  // string[]
+  successMetric     String
+  source            RecommendationSource  @default(FALLBACK)
+  status            RecommendationStatus  @default(GENERATED)
+  skillScoreBefore  Float?
+  skillScoreAfter   Float?
+  feedbackRating    Int?
+  feedbackComment   String?
+  createdAt         DateTime              @default(now())
+  openedAt          DateTime?
+  startedAt         DateTime?
+  completedAt       DateTime?
+
+  practiceSessions PracticeSession[]
+
+  @@index([studentId])
+}
+
+model LearningResource {
+  id               String        @id @default(cuid())
+  title            String
+  skillId          String
+  skill            Skill         @relation(fields: [skillId], references: [id])
+  difficulty       String        @default("MEDIUM")
+  estimatedMinutes Int           @default(15)
+  url              String
+  description      String
+  resourceType     ResourceType  @default(ARTICLE)
+  createdAt        DateTime      @default(now())
+}
+
+model InterviewSession {
+  id           String        @id @default(cuid())
+  studentId    String
+  student      Student       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  jobRoleId    String
+  jobRole      JobRole       @relation(fields: [jobRoleId], references: [id])
+  type         InterviewType
+  difficulty   String        @default("MEDIUM")
+  questions    Json          // string[]
+  answers      Json          // string[]
+  aiScore      Float?
+  strengths    Json?         // string[]
+  improvements Json?         // string[]
+  nextAction   String?
+  source       RecommendationSource @default(FALLBACK)
+  createdAt    DateTime      @default(now())
+
+  @@index([studentId])
+}
+
+model StudentBadge {
+  id        String   @id @default(cuid())
+  studentId String
+  student   Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  code      String   // e.g. "FIRST_ASSESSMENT"
+  title     String
+  earnedAt  DateTime @default(now())
+
+  @@unique([studentId, code])
+}
